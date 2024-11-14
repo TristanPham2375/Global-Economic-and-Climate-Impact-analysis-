@@ -10,3 +10,5 @@ Deliverables: Cleaned and modeled data, visualizations, and insights into global
 Language: R
 Libraries: ggplot2 and tidyverse for data visualization and manipulation
 Tools: Excel for initial data handling and formatting
+
+Make sure to download all the files and choose the correct directory in R!
