@@ -1,0 +1,698 @@
+---
+title: "Climate Research Report"
+author: "Tristan Pham"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-11-29"
+---
+
+```{r label=setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+library(arrow)
+library(readxl)
+library(writexl)
+library(openxlsx)
+library(repurrrsive)
+library(jsonlite)
+library(scales)
+library(patchwork)
+library(ggrepel)
+library(ggthemes)
+library(ggridges)
+library(RColorBrewer)
+library(ggplot2)
+library(sf)
+```
+
+## Project 3 - Part 2 (Group 15):
+
+# Exploring climate related data sets
+
+## The relationship between economic expansion, climate change and health expectancy
+
+In this comprehensive analysis, our objective is to investigate the influence of economic growth - specifically, how the economy of a country influences their viewpoints pertaining to climate change and how a more developed economy may have different viewpoints on climate changed as opposed to a developing or an underdeveloped one. Furthermore, we aim to delve into how economic growth and signs of climate change, such as storms relates to or affects human health and overall life satisfaction.
+
+### Economy and climate awareness:
+
+We chose to analyze an article from the International Monetary Fund titled '[Poor and Vulnerable Countries Need Support to Adapt to Climate Change](https://www.imf.org/en/Blogs/Articles/2022/03/23/blog032322-poor-and-vulnerable-countris-need-support-to-adapt-to-climate-change)' by Kristalina Georgieva, Vitor Gaspar and Ceyla Pazarbasioglu, (2022, March 23), IMF Blog. Overall, the article emphasized on the urgent need for international support to provide financial help to the poorest African countries to adapt to the impacts of climate change, as the research suggests that the slightest occurrence of natural disasters could significantly impact the economy of these agricultural nations.
+
+Our primary interest from the article was the challenges that climate change poses to economic expansion. This prompts us to question the correlation - is climate change the byproduct of economic growth or is it simply a natural occurrence that nations have to overcome? Moreover, how do the perspectives differ between those experiencing the consequences firsthand and those who are not?
+
+## Data and cleaning
+
+#### World region list:
+
+The data is obtained from [World Regions Classification](https://meta.wikimedia.org/wiki/List_of_countries_by_regional_classification). Here we split `regionclassification` and create a new data frame `regionclassification_1` with three columns : *country*, *regio*n and *Global north/south* division for ease of use in later comparisons.
+
+```{r echo=FALSE, message=FALSE}
+#make sure to install the data
+regionclassification <- read_csv("WorldRegions.csv", col_names = c("x1")) |> 
+    rename(country_region_global = x1)
+
+df_split <- str_split(regionclassification$country_region_global, "\t", simplify = TRUE)
+regionclassification$country <- df_split[, 1]
+regionclassification$region <- df_split[, 2]
+regionclassification$north_south <- df_split[, 3]
+
+(regionclassification_1 <- tibble(
+  country = regionclassification$country,
+  region = regionclassification$region,
+  north_south = regionclassification$north_south) |> 
+    filter(country != "Country")
+)
+```
+
+#### Opinions on climate data from Meta:
+
+This dataset contains aggregate response data from the '2022 Climate Change Opinion Survey'. This survey was a partnership between the 'Yale Program on Climate Change Communication and Data for Good' at Meta. We have selected the `climate_awareness` , `climate_beliefs` and `harm_personally` sheets in the data package and have done some cleaning to the three data sets.
+
+```{r echo=FALSE, message=FALSE}
+#make sure to install the data
+climate_opinion_address <- "climate_change_opinion_survey_2022_aggregated.xlsx"
+
+(climate_awareness <- climate_opinion_address |>
+  read.xlsx(sheet = "climate_awareness") |>
+    pivot_longer(cols = !climate_awareness, names_to="country", values_to = "score") |>
+    rename(answer = climate_awareness) |>
+    mutate(answer = recode(
+    answer,
+    "I have never heard of it" = "no awareness",
+    "I know a little about it" = "little awareness",
+    "I know a moderate amount about it" = "moderate awareness",
+    "I know a lot about it" = "extensive awareness",
+    "Refused" = "refused to answer",
+    "(Unweighted Base)" = "(Unweighted Base)")) |>
+    pivot_wider(names_from = answer, values_from = score)
+)
+
+(climate_beliefs <- climate_opinion_address |>
+  read.xlsx(sheet = "climate_beliefs") |>
+    pivot_longer(cols = !climate_beliefs, names_to="country", values_to = "score") |>
+    rename(answer = climate_beliefs) |>
+    mutate(answer = recode(
+    answer,
+    "Caused mostly by human activities" = "human activities",
+    "Caused mostly by natural changes in the environment" = "natural changes",
+    "Caused about equally by human activities and natural changes" = "both human and nature",
+    "None of the above because climate change isn’t happening" = "dont believe in climate change",
+    "Other" = "other",
+    "Refused" = "refused to answer",
+    "(Unweighted Base)" = "(Unweighted Base)")) |>
+    pivot_wider(names_from = answer, values_from = score)
+)
+ 
+
+(harm_personally <- climate_opinion_address |>
+  read.xlsx(sheet = "harm_personally") |>
+    pivot_longer(cols = !harm_personally, names_to="country", values_to = "score") |>
+    rename(answer = harm_personally) |>
+    mutate(answer = recode(
+    answer,
+    "A great deal" = "great harm",
+    "A moderate amount" = "moderate harm",
+    "Only a little" = "little harm",
+    "Not at all" = "no harm",
+    "Don’t know" = "unaware",
+    "Refused" = "refused to answer",
+    "(Unweighted Base)" = "(Unweighted Base)")) |>
+    pivot_wider(names_from = answer, values_from = score)
+)
+```
+
+We joined the three data frames together for ease of comparison, removing all the *Unweighted Base* and *Refused Answers* for the purpose of trimming down unessential data for our analysis. In this data, participants were asked three questions to determine:
+
+-   Their awareness of climate change, from 'no awareness' to 'extensive awareness'.
+
+-   The causes of climate change, from 'human activities' to 'dont believe in climate change'.
+
+-   How climate change harms them personally, from 'great harm' to 'unaware'.
+
+The country level statistics reflects the percentage of respondents in each country providing a response to each question, it is calculated in percentage. We name our new data frame `climate_opinion` .
+
+```{r echo=FALSE, message=FALSE}
+(climate_opinion <- climate_awareness |> 
+    full_join(climate_beliefs, by = join_by(country)) |> 
+    full_join(harm_personally, by = join_by(country)) |>
+    select(!c("refused to answer.x", "(Unweighted Base).x", "other", "refused to answer.y", "(Unweighted Base).y", "refused to answer", "(Unweighted Base)")) |>  
+    mutate("country" = gsub("\\.", " ", country))
+)
+```
+
+#### NOAA Storm data for Atlantic and Pacific basins:
+
+This is the [NOAA](https://www.nhc.noaa.gov/data/hurdat) hurricane data up to year 2022, many of the cleaning was done in Project 2 and Project 3 - Part 1. Here, we drop the columns with duplicates data, such as the *NameYear* and *ObservYear* and columns with NA values for ease of use. We name our new data frame `cyclones` .
+
+```{r echo=FALSE, message=FALSE}
+#make sure to install the data
+(cyclones <- read_parquet("Cyclone-1850-2023.parquet") |>
+    select(Basin:NameYear, Month:Day, status:max_wind, num_lat, num_long, category)
+)
+```
+
+#### World Happiness Report Score:
+
+The World Happiness Report is an annual report with scores computed based on how happy people are with their current life. We drop the unnecessary columns for the purpose of trimming the data. The new data frame `world_happiness` consists of the columns:
+
+-   *life ladder,* with 0 being the worst possible life and 10 being the best possible life.
+
+-   *log GDP per capita,* a country's economic output per person.
+
+-   *social support,* with 0 being the worst and 1 being the best.
+
+-   *healthy life expectancy at birth,* the average number of years a person would expect to live in good health.
+
+```{r echo=FALSE, message=FALSE}
+#make sure to install the data
+world_happiness_address <- "DataForTable2.1WHR2023.xls"
+
+(world_happiness <- world_happiness_address |>
+  read_excel() |> 
+    select("Country name":"Healthy life expectancy at birth") |>
+    rename("country" = "Country name", 
+           "life ladder" = "Life Ladder",
+           "log GDP per capita" = "Log GDP per capita",
+           "social support" = "Social support", 
+           "healthy life expectancy at birth" = "Healthy life expectancy at birth")
+)
+```
+
+## Analyzing Data
+
+### I. Does economic expansion influence perspectives?
+
+Firstly, we identify the top 15 economies with the highest average GDP per capita from 2008 to 2022 as a sample size for our analysis on climate opinions of developed economies.
+
+```{r echo=FALSE, message=FALSE}
+(top_15_economies <- world_happiness |> group_by(country) |> mutate(`average GDP` = mean(`log GDP per capita`, na.rm = TRUE)) |> select(country, `average GDP`) |> distinct(country, `average GDP`) |> ungroup() |> arrange(desc(`average GDP`)) |> slice_head(n = 15)
+  )
+```
+
+We have identified the top 15 economies with the highest average GDP per capita over the last 14 years which are: Luxembourg, Qatar, Singapore, Ireland, Switzerland, United Arab Emirates, Norway, United States, Kuwait, Hong Kong, Netherlands, Denmark, Austria, Iceland and Germany.
+
+Then, we plot a line graph to see the changes and assess the overall trend in their GDP per capita from 2008 to 2022.
+
+```{r echo=FALSE, message=FALSE}
+(world_happiness |> 
+    filter(country %in% c("Luxembourg", "Qatar", "Singapore", "Ireland", "Switzerland", "United Arab Emirates", "Norway", "United States", "Kuwait", "Hong Kong S.A.R. of China", "Netherlands", "Denmark", "Austria", "Iceland", "Germany")) |> 
+    ggplot(aes(x = year, y = `log GDP per capita`, color = country)) + 
+    geom_line() +
+    labs(
+      x = "Years",
+      y = "GDP per capita",
+      title = "Top 15 countries with the highest average GDP per capita",
+      subtitle = "From 2008 to 2022",
+      caption = "Data from World Happiness Report") +
+    guides(color = guide_legend(title = "Top 15 countries", ncol = 2))
+  )
+```
+
+In general, even though the majority of the countries from the provided list are regarded as having 'matured economies', we could clearly see that there was an incrementation in most observations. Therefore it suggests that despite these nations possessing a high GDP per capita, they continue to experience economic growth.
+
+Subsequently, we seek to identify the perspectives regarding climate change held by the populations within these nations. First, we calculate the average level of awareness based on the response of these 15 countries.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top <- climate_opinion |> 
+  filter(country %in% c("Luxembourg", "Qatar", "Singapore", "Ireland", "Switzerland", "United Arab Emirates", "Norway", "United States", "Kuwait", "Hong Kong S.A.R. of China", "Netherlands", "Denmark", "Austria", "Iceland", "Germany")) |> 
+    summarize(.by = c(country, `no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`))
+  
+(climate_awareness_top_15 <- climate_awareness_top |> 
+    mutate(`no awareness` = mean(climate_awareness_top$`no awareness`),
+           `little awareness` = mean(climate_awareness_top$`little awareness`),
+           `moderate awareness` = mean(climate_awareness_top$`moderate awareness`),
+           `extensive awareness` = mean(climate_awareness_top$`extensive awareness`)) |>
+    select(`no awareness`:`extensive awareness`) |>
+    distinct() |> 
+    pivot_longer(cols = c(`no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`),
+                 names_to = "awareness", 
+                 values_to = "percentage")
+)
+```
+
+Then, we visualize it with a bar graph.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top_15$awareness <- factor(climate_awareness_top_15$awareness, levels = c("no awareness", "little awareness", "moderate awareness", "extensive awareness"))
+
+custom_colors <- c("#d4beae", "#d4996e", "#d67c3a", "#d65b00")
+
+(climate_awareness_top_15 |> ggplot(aes(x = awareness, y = percentage, fill = awareness)) + 
+    geom_col(fill = custom_colors) + 
+    scale_fill_manual(values = custom_colors) +
+    labs(
+      x = "Level of awareness",
+      y = "Percentage",
+      title = "Average level of awareness of climate change in the year 2022",
+      subtitle = "Top 15 countries with the highest GDP per capita",
+      caption = "Data from Facebook climate opinion data"
+    )
+)
+```
+
+Upon evaluation, the evidence does not explicitly denote outstanding levels of climate change awareness, given that nearly 27% of the population within these nations reportedly possess 'minimal awareness' of the ongoing climatic shifts. Nonetheless, it is noteworthy to mention that the segment of the population with 'no awareness' is relatively minor, with approximately 7%.
+
+For the purpose of comparison, we apply the same procedures to developing and under developed countries.
+
+First we pinpoint the nations with emerging economies, characterized by a fast rate of growth in their GDP per capita.
+
+```{r echo=FALSE, message=FALSE}
+(top_15_developing <- world_happiness |>
+    group_by(country) |> 
+    filter(!is.na(`log GDP per capita`)) |>
+    filter(all(c(2008, 2022) %in% year)) |>
+    filter(year == "2008" | year == "2022") |>
+    select(country, year, `log GDP per capita`) |> 
+    spread(year, `log GDP per capita`) |>
+    mutate(`GDP growth` = `2022` - `2008`) |>
+    select(country, `GDP growth`) |>
+    arrange(desc(`GDP growth`)) |>
+    head(15) |>
+    ungroup() 
+)
+```
+
+We have identified the top 15 economies with the highest GDP growth per capita from 2008 to 2022 which are: Bangladesh, Ireland, Vietnam, India, Georgia, Uzbekistan, Kosovo, Cambodia, Moldova, Indonesia, Dominican Republic, Mongolia, Nepal, Ghana and Zimbabwe.
+
+Now we visualize the growth using a line graph, just to confirm.
+
+```{r echo=FALSE, message=FALSE}
+(world_happiness |> 
+    filter(country %in% c("Bangladesh", "Ireland", "Vietnam", "India", "Georgia", "Uzbekistan", "Kosovo", "Cambodia", "Moldova", "Indonesia", "Dominican Republic", "Mongolia", "Nepal", "Ghana", "Zimbabwe")) |> 
+    ggplot(aes(x = year, y = `log GDP per capita`, color = country)) + 
+    geom_line() +
+    labs(
+      x = "Years",
+      y = "GDP per capita",
+      title = "Top 15 countries with the highest average GDP growth per capita",
+      subtitle = "From 2008 to 2022",
+      caption = "Data from World Happiness Report") +
+    guides(color = guide_legend(title = "Top 15 countries", ncol = 2))
+  )
+```
+
+Despite their lower staring point (with the exception of Ireland, which showed in both data frames), these emerging economies witnessed a far more consistent growth with less economic dips and fluctuations as opposed to the more developed countries.
+
+Now we identify the awareness of climate change of the population of these nations.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top_growth <- climate_opinion |> 
+  filter(country %in% c("Bangladesh", "Ireland", "Vietnam", "India", "Georgia", "Uzbekistan", "Kosovo", "Cambodia", "Moldova", "Indonesia", "Dominican Republic", "Mongolia", "Nepal", "Ghana", "Zimbabwe")) |> 
+    summarize(.by = c(country, `no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`))
+
+(climate_awareness_top_15_growth <- climate_awareness_top_growth |> 
+    mutate(`no awareness` = 
+             mean(climate_awareness_top_growth$`no awareness`),
+           `little awareness` = 
+             mean(climate_awareness_top_growth$`little awareness`),
+           `moderate awareness` = 
+             mean(climate_awareness_top_growth$`moderate awareness`),
+           `extensive awareness` = 
+             mean(climate_awareness_top_growth$`extensive awareness`)) |>
+    select(`no awareness`:`extensive awareness`) |>
+    distinct() |> 
+    pivot_longer(cols = c(`no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`),
+                 names_to = "awareness", 
+                 values_to = "percentage")
+)
+```
+
+And we visualize using a bar plot.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top_15_growth$awareness <- factor(climate_awareness_top_15_growth$awareness, levels = c("no awareness", "little awareness", "moderate awareness", "extensive awareness"))
+
+custom_colors <- c("#a9aecf", "#727fd4", "#3b4fd4", "#0b26d9")
+
+(climate_awareness_top_15_growth |> ggplot(aes(x = awareness, y = percentage, fill = awareness)) + 
+    geom_col(fill = custom_colors) + 
+    scale_fill_manual(values = custom_colors) +
+    labs(
+      x = "Level of awareness",
+      y = "Percentage",
+      title = "Average level of awareness of climate change in the year 2022",
+      subtitle = "Top 15 countries with the highest average GDP growth per capita",
+      caption = "Data from Facebook climate opinion data"
+    )
+)
+```
+
+We could join the data sets representing emerging and matured economies together for ease of comparison.
+
+```{r echo=FALSE, message=FALSE}
+(climate_awareness_growth <- climate_awareness_top_15 |> full_join(climate_awareness_top_15_growth, by = join_by(awareness)) |>
+    rename(
+      `matured economies` = percentage.x,
+      `emerging economies` = percentage.y) 
+  )
+```
+
+Observations shows that countries with a developing economy often has lower awareness of climate change compared to developed economy. With the former having almost 60% population with 'little to no awareness' as opposed to the 34% of the latter.
+
+Therefore, we might come to the conclusion that economic growth does not necessarily result in a low awareness of climate change. Rather, we argue that the average GDP per capita dictates this, in which lower average GDP means lower awareness and higher average GDP means higher awareness.
+
+We prove our point by again, selecting a sample size of 15 countries with the lowest average GDP per capita from 2008 to 2022.
+
+```{r echo=FALSE, message=FALSE}
+(top_15_lowest_economies <- world_happiness |> 
+    group_by(country) |> 
+    mutate(`average GDP` = mean(`log GDP per capita`, na.rm = TRUE)) |> 
+    select(country, `average GDP`) |> 
+    distinct(country, `average GDP`) |> 
+    ungroup() |> 
+    arrange(`average GDP`) |> 
+    slice_head(n = 15) 
+  )
+```
+
+We have identified the top 15 economies with the lowest average GDP per capita which are: Burundi, Congo (Kinshasa), Central African Republic, Somalia, Niger, Mozambique, Malawi, Liberia, Madagascar, Sierra Leone, Chad, Rwanda, Burkina Faso, Togo and Ethiopia.
+
+Now we identify the awareness of climate change of the population of these nations.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top_lowest <- climate_opinion |> 
+  filter(country %in% c("Burundi", "Congo (Kinshasa)", "Central African Republic", "Somalia", "Niger", "Mozambique", "Malawi", "Liberia", "Madagascar", "Sierra Leone", "Chad", "Rwanda", "Burkina Faso", "Togo", "Ethiopia")) |> 
+    summarize(.by = c(country, `no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`))
+
+(climate_awareness_top_15_lowest <- climate_awareness_top_lowest |> 
+    mutate(`no awareness` = 
+             mean(climate_awareness_top_lowest$`no awareness`),
+           `little awareness` = 
+             mean(climate_awareness_top_lowest$`little awareness`),
+           `moderate awareness` = 
+             mean(climate_awareness_top_lowest$`moderate awareness`),
+           `extensive awareness` = 
+             mean(climate_awareness_top_lowest$`extensive awareness`)) |>
+    select(`no awareness`:`extensive awareness`) |>
+    distinct() |> 
+    pivot_longer(cols = c(`no awareness`, `little awareness`, `moderate awareness`, `extensive awareness`),
+                 names_to = "awareness", 
+                 values_to = "percentage")
+)
+```
+
+And visualize the data with a bar graph.
+
+```{r echo=FALSE, message=FALSE}
+climate_awareness_top_15_lowest$awareness <- factor(climate_awareness_top_15_lowest$awareness, levels = c("no awareness", "little awareness", "moderate awareness", "extensive awareness"))
+
+custom_colors <- c("#d4aba9", "#d4736e", "#d13e36", "#cf0d02")
+
+(climate_awareness_top_15_lowest |> ggplot(aes(x = awareness, y = percentage, fill = awareness)) + 
+    geom_col(fill = custom_colors) + 
+    scale_fill_manual(values = custom_colors) +
+    labs(
+      x = "Level of awareness",
+      y = "Percentage",
+      title = "Average level of awareness of climate change in the year 2022",
+      subtitle = "Top 15 countries with the lowest average GDP per capita",
+      caption = "Data from Facebook climate opinion data"
+    )
+)
+```
+
+Again, we join the climate awareness for the lowest average GDP and the highest average GDP for ease of comparison.
+
+```{r echo=FALSE, message=FALSE}
+(climate_awareness_growth <- climate_awareness_top_15 |> full_join(climate_awareness_top_15_lowest, by = join_by(awareness)) |>
+    rename(
+      `matured economies` = percentage.x,
+      `emerging economies` = percentage.y) 
+  )
+```
+
+The pattern is consistent, nations with higher average GDPs tend to have higher levels of awareness of climate change, whereas those with lower average GDPs tend to be lower. We could plot a map to see where the distribution of high and low GDP.
+
+Firstly, we find and fix the mismatch between some names of the same regions in the two data sets `world` and `GDP_distribution`.
+
+```{r echo=FALSE, message=FALSE}
+world <- map_data("world")
+
+GDP_distribution <- world_happiness |> 
+    group_by(country) |> 
+    mutate(`average GDP` = mean(`log GDP per capita`, na.rm = TRUE)) |> 
+    select(country, `average GDP`) |> 
+    distinct(country, `average GDP`) |> 
+    ungroup() |> 
+    arrange(`average GDP`) 
+
+# world |> 
+#   distinct(region) |> 
+#   anti_join(GDP_distribution, by = join_by("region" == "country")) 
+
+GDP_distribution |> 
+  distinct(country) |> 
+  anti_join(world, by = join_by("country" == "region")) 
+```
+
+Then we plot the map.
+
+```{r echo=FALSE, message=FALSE}
+iu1 <- GDP_distribution |> rename (region = country)
+iu1$region[2] <- "Democratic Republic of the Congo"
+iu1$region[38] <-"Republic of Congo"
+iu1$region[45] <-"Palestine"
+iu1$region[113] <-"Turkey"
+iu1$region[128] <-"Czech Republic"
+iu1$region[141] <-"Taiwan"
+iu1$region[139] <- "UK"
+iu1$region[155] <- "USA"
+iu1 <- semi_join(iu1, world, by = "region") 
+gg <- ggplot()
+gg <- gg + geom_map(
+  data = world,
+  map = world,
+  aes(x = long, y = lat, map_id = region),
+  color = "black"
+  )
+gg <- gg + geom_map(
+  data = world,
+  map = world,
+  aes(x = long, y = lat, map_id = region),
+  color = "black",
+  )
+  gg <- gg + geom_map(
+  data = iu1,
+  map = world,
+  aes(fill = `average GDP`, map_id = region),
+  color = "black"
+  )
+  gg <- gg + scale_fill_continuous(low = 'green', high = 'blue',
+  guide = 'colorbar')
+  gg +
+  theme_minimal() +
+  labs(
+    y = "Latitude", 
+    x = "Longitude", 
+     title = "World average GDP per capita map 2008 - 2022 ",
+     subtitle = "Calulated from average GDP per capita from 2008 - 2022",
+     caption = "Data from World Happiness report", 
+    fill = "GDP"
+  )
+```
+
+Then, we can plot a map of the climate awareness level of the world. Firstly, we find and fix the mismatch between some names of the same regions in the two data sets `world` and `climate_opinion_1`.
+
+```{r echo=FALSE, message=FALSE}
+world <- map_data("world")
+
+climate_opinion_1 <- climate_opinion |> select(country, `no awareness`:`extensive awareness`) |> 
+  mutate(`moderate-extensive awareness` = `moderate awareness` + `extensive awareness`)
+# world |> 
+#   distinct(region) |> 
+#   anti_join(climate_opinion_1, by = join_by("region" == "country")) 
+climate_opinion_1 |> 
+  distinct(country) |> 
+  anti_join(world, by = join_by("country" == "region")) 
+```
+
+Finally, we plot the map.
+
+```{r echo=FALSE, message=FALSE}
+iu <- climate_opinion_1 |> rename (region = country)
+iu$region[13] <- "Bolivia"
+iu$region[22] <-"West Indies"
+iu$region[27] <-"Ivory Coast"
+iu$region[30] <-"Czech Republic"
+iu$region[58] <-"Laos"
+iu$region[72] <-"North Macedonia"
+iu$region[104] <- "UK"
+iu$region[105] <- "USA"
+iu <- semi_join(iu, world, by = "region") 
+gg <- ggplot()
+gg <- gg + geom_map(
+  data = world,
+  map = world,
+  aes(x = long, y = lat, map_id = region),
+  color = "black"
+  )
+gg <- gg + geom_map(
+  data = world,
+  map = world,
+  aes(x = long, y = lat, map_id = region),
+  color = "black",
+  )
+  gg <- gg + geom_map(
+  data = iu,
+  map = world,
+  aes(fill = `moderate-extensive awareness`, map_id = region),
+  color = "black"
+  )
+  gg <- gg + scale_fill_continuous(low = 'yellow', high = 'red',
+  guide = 'colorbar')
+  gg +
+  theme_minimal() +
+  labs(
+    y = "Latitude", 
+    x = "Longitude", 
+     title = "Percentage of population with awareness about climate change 2022",
+     subtitle = "Calulated on 'moderate' to 'extensive' of awareness",
+     caption = "Data from Facebook climate opinion data", 
+    fill = "Percentage"
+  )
+```
+
+Though numerous countries are absent from the climate data survey conducted by Meta, upon comparing the two maps, it is apparent that more economically developed nations are in the EU and NA region. Their economic prosperity translated into moderate to extensive levels of climate change awareness, while the opposite was true for regions with less economic power, such as SEA, SA and Africa.
+
+From the analysis above, we can confidently say climate change awareness and economic power are directly proportional. Which makes it is quite fascinating, since despite the article highlighting that impoverished nations are the most affected by climate change, our data analysis reveals that they are in fact the least aware of the circumstances. Conversely, it is intriguing to observe that wealthier countries, which experience minimal impact from climate change, are the most knowledgeable about it.
+
+Is it possible that there are other factors at play, such as the availability of education, the literacy rate or communication within a population? Alternatively, could it be that wealthier countries are better equipped to handle the impacts of climate change, resulting in less damage to their economies?
+
+### II. What is the correlation between economic power and exposure to natural disasters?
+
+In order to ascertain whether economic power mitigates the impact of natural calamities, we shall conduct an in-depth analysis of the NOAA Storms dataset.
+
+Our focus now is to explore storm data further and analyze the severity and distribution of storms across various regions. To begin with, we divide them into Pacific and Atlantic basins and count the total amount from 2008 to 2022.
+
+```{r echo=FALSE, message=FALSE}
+cyclones_Atlantic <- cyclones |>
+    filter(Basin == "AL" & NameYear == "2008":"2022") |>
+    mutate(count = n()) |> 
+    distinct(Basin, count)
+
+cyclones_Pacific_EP <- cyclones |>
+    filter(Basin == "EP" & NameYear == "2008":"2022") |>
+    mutate(count = n()) |> 
+    distinct(Basin, count) 
+
+cyclones_Pacific_CP <- cyclones |>
+    filter(Basin == "CP" & NameYear == "2008":"2022") |>
+    mutate(count = n()) |> 
+    distinct(Basin, count) 
+
+(cyclones_count <- cyclones_Atlantic |> 
+    full_join(cyclones_Pacific_EP, by = join_by(Basin)) |>
+    full_join(cyclones_Pacific_CP, by = join_by(Basin)) |> 
+    mutate(count = ifelse(is.na(count), 0, count)) |>
+    mutate(count.x = ifelse(is.na(count.x), 0, count.x)) |>
+    mutate(count.y = ifelse(is.na(count.y), 0, count.y)) |>
+    mutate(`total storms` = count.x + count.y + count) |>
+    rename(basin = Basin) |>
+    select(basin, `total storms`)
+  )
+
+```
+
+Overall, there is little difference between the number of storms in the Atlantic compared to the Pacific Basin. We could try to apply the same approach as in Part 1 to detect storms that are rapidly intensifying in each Basin, we identify storms with rapid intensification from 2008 to 2022.
+
+```{r echo=FALSE, message=FALSE}
+rapid <- 30
+
+is_rapid_intensifying <- cyclones |> 
+    group_by(Basin, NameYear, Number) |> 
+    mutate(
+      six_hour_incr = max_wind - lag(max_wind, n=1), 
+      twelve_hour_incr = max_wind - lag(max_wind, n=2),
+      eighteen_hour_incr = max_wind - lag(max_wind, n=3), 
+      one_day_incr = max_wind - lag(max_wind, n=4), 
+      forward_six_hour_incr = lead(max_wind, n=1) - max_wind, 
+      forward_twelve_hour_incr = lead(max_wind, n=2) - max_wind,
+      forward_eighteen_hour_incr = lead(max_wind, n=3) - max_wind,
+      forward_one_day_incr = lead(max_wind, n=4) - max_wind) |>
+    filter(
+      six_hour_incr >= rapid |
+      twelve_hour_incr >= rapid |
+      eighteen_hour_incr >= rapid |
+      one_day_incr >= rapid |
+      forward_six_hour_incr >= rapid |
+      forward_twelve_hour_incr >= rapid |
+      forward_eighteen_hour_incr >= rapid |
+      forward_one_day_incr >= rapid) |>
+    select(
+      six_hour_incr, twelve_hour_incr, eighteen_hour_incr, one_day_incr, 
+      forward_six_hour_incr, forward_twelve_hour_incr, forward_eighteen_hour_incr, forward_one_day_incr,
+      everything()) |>
+    ungroup()
+rapid_intensifying_cyclones <- cyclones |> 
+    semi_join(is_rapid_intensifying, by = join_by(Basin, NameYear, Number)) |>
+    select(max_wind, category, everything())
+
+(rapid_intensifying_plot <- rapid_intensifying_cyclones |>
+  summarize(.by = c(Basin, NameYear, Number), 
+            max_cat = max(category)) |>
+     ggplot(aes(x = NameYear))
+   + geom_bar(aes(fill = max_cat))
+   + coord_flip()
+   + facet_wrap("Basin")
+   + labs(
+   title = "Number of storms having rapidly intensifying episodes increases in all basins",
+   subtitle = "From 2008 to 2022",
+   x = "Year",
+   y = "Number of storms in a year with rapid intensification episodes",
+   caption = "Data from NOAA") + guides(fill = guide_legend(title = "Maximal category", ncol =1)) +
+    xlim(2008, 2022) +
+    scale_fill_manual(values = c("TS" = "#e0c7b4", "1" = "#e0b390", "2" = "#de9c68", "3" = "#db8542", "4" = "#db7321", "5" = "#c45802")) 
+ )
+```
+
+There seems to be more rapidly intensifying storms in the Pacific basin, now we want to determine the frequency of heavy storms, or even catastrophic storms in each basin, we visualize it with a bar plot for each basin starting from 2008.
+
+```{r echo=FALSE, message=FALSE}
+(catastrophic_storms <- cyclones |> 
+    filter(!is.na(category)) |> 
+    filter(NameYear == "2008":"2022") |>
+    ggplot(aes(x = category, fill = category)) +
+    geom_bar(color = "black") + 
+    facet_wrap("Basin") + 
+    scale_fill_manual(values = c("TD" = "#61f505", "TS" = "#c9f505", "1" = "#f5e505", "2" = "#f5c105", "3" = "#f57905", "4" = "#f54105", "5" = "#f50505")) +
+    labs(
+       title = "Number of storms based on category in each basin",
+       subtitle = "From 2008 to 2022",
+       x = "Category",
+       y = "Number of storms",
+   caption = "Data from NOAA"
+    )
+    )
+```
+
+During this time period, it appears that the Pacific basin has experienced a slight increase in severe storms. Nevertheless, the total number of storms with hurricane force in both basin remains relatively identical. Therefore, we might consider using coordinates to narrow down the storm distributions for each region by finding the frequency of storms in the Northern and Southern hemisphere, we classify them based on their latitude in both basins. The horse latitude of 30 degrees north of the equator is used to distinguish regions with more developed economies (NA and EU) from less developed and developing economies (SA, SEA, Africa).
+
+```{r echo=FALSE, message=FALSE}
+cyclones_north <- cyclones |>
+    filter(num_long >= 30) |>
+  mutate(count = n()) |> 
+    select(count) |> 
+    rename(`Northern` = count) |>
+    distinct()
+
+
+cyclones_south <- cyclones |>
+    filter(num_long < 30) |>
+  mutate(count = n()) |> 
+    select(count) |> 
+    rename(`Southern` = count) |>
+    distinct()
+
+(cyclones_longitude <- merge(cyclones_north, cyclones_south, 
+                             by = "row.names", all = TRUE)) |> 
+  pivot_longer(cols = c(`Northern`, `Southern`), names_to = "region", values_to = "total storms") |>
+  select(region, `total storms`)
+  
+```
+
+From observation, there is clear difference between the frequency of storms that occurs below the 30 degree north latitude. Although we are missing alot of data, it is safe to say that there are less occurrence of storms around the northern region (NA, EU) as opposed to the southern regions (SA, SEA, Africa), which implies that these nations suffers more from catastrophic events.
+
+## Results
+
+To summarize, while the aforementioned analysis indicates that climate change has adverse economic implications for Southeast Asia, South America, and Africa, we cannot assert with absolute certainty as our focus was primarily on tropical storms, which are prevalent and exacerbated in hot and humid regions. Numerous other indicators of climate change, such as droughts, tornadoes, and flooding, were not considered. Nevertheless, we agree with the article's viewpoint that financially supporting economically disadvantaged nations to adapt to climate change is more crucial than attempting to reverse its effects. However, we also think that it is important to raise the awareness of these population about climate change so that they could even further prevent and minimize the effect of it.
