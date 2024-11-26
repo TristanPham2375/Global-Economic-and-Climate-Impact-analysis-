@@ -1,4 +1,4 @@
-# Global-Economic-and-Climate-Impact-analysis-
+# Globa Economic and Climate Impact analysis
 Global Economic and Climate Impact Analysis
 A data analysis project exploring the relationship between global economic trends and climate change. This analysis leverages data from sources like Meta, NOAA, and the World Happiness Report, providing insights into how economic factors correlate with climate impact across various regions.
 
