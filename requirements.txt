@@ -1,3 +1,18 @@
-dash
-pandas
-plotly
+install.packages(c(
+  "tidyverse",
+  "tidymodels",
+  "arrow",
+  "readxl",
+  "writexl",
+  "openxlsx",
+  "repurrrsive",
+  "jsonlite",
+  "scales",
+  "patchwork",
+  "ggrepel",
+  "ggthemes",
+  "ggridges",
+  "RColorBrewer",
+  "ggplot2",
+  "sf"
+))
